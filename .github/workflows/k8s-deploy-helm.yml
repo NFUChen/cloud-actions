@@ -17,7 +17,12 @@ on:
         type: string
         default: "default"
       values-file:
-        description: "Path to values file (relative to repo root)"
+        description: "Path to values file (relative to repo root). Deprecated: use values-files for multiple files."
+        required: false
+        type: string
+        default: ""
+      values-files:
+        description: "Comma-separated list of values file paths (relative to repo root). Applied in order; later files override earlier ones."
         required: false
         type: string
         default: ""
@@ -31,6 +36,11 @@ on:
         required: false
         type: string
         default: "latest"
+      deploy-mode:
+        description: "Deployment mode: 'release' (helm upgrade --install) or 'template' (helm template | kubectl apply)"
+        required: false
+        type: string
+        default: "release"
     secrets:
       kubeconfig:
         description: "Full kubeconfig file content (base64 encoded)"
@@ -83,11 +93,26 @@ jobs:
           RELEASE_NAME: ${{ inputs.release-name }}
           NAMESPACE: ${{ inputs.namespace }}
           VALUES_FILE: ${{ inputs.values-file }}
+          VALUES_FILES: ${{ inputs.values-files }}
           SET_VALUES: ${{ inputs.set-values }}
+          DEPLOY_MODE: ${{ inputs.deploy-mode }}
         run: |
+          if [ "$DEPLOY_MODE" != "release" ] && [ "$DEPLOY_MODE" != "template" ]; then
+            echo "::error::Invalid deploy-mode '$DEPLOY_MODE'. Must be 'release' or 'template'."
+            exit 1
+          fi
+
           HELM_ARGS=()
           if [ -n "$VALUES_FILE" ]; then
             HELM_ARGS+=(-f "$VALUES_FILE")
+          fi
+          if [ -n "$VALUES_FILES" ]; then
+            IFS=',' read -ra FILES <<< "$VALUES_FILES"
+            for f in "${FILES[@]}"; do
+              f=$(echo "$f" | xargs)
+              [ -z "$f" ] && continue
+              HELM_ARGS+=(-f "$f")
+            done
           fi
           if [ -n "$SET_VALUES" ]; then
             while IFS= read -r line; do
@@ -96,10 +121,19 @@ jobs:
               HELM_ARGS+=(--set "$line")
             done <<< "$SET_VALUES"
           fi
-          OUTPUT=$(helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" \
-            -n "$NAMESPACE" \
-            --create-namespace \
-            "${HELM_ARGS[@]}" 2>&1)
+
+          if [ "$DEPLOY_MODE" = "release" ]; then
+            OUTPUT=$(helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" \
+              -n "$NAMESPACE" \
+              --create-namespace \
+              "${HELM_ARGS[@]}" 2>&1)
+          else
+            kubectl get namespace "$NAMESPACE" >/dev/null 2>&1 || kubectl create namespace "$NAMESPACE"
+            MANIFEST=$(helm template "$RELEASE_NAME" "$CHART_PATH" \
+              -n "$NAMESPACE" \
+              "${HELM_ARGS[@]}")
+            OUTPUT=$(echo "$MANIFEST" | kubectl apply -n "$NAMESPACE" -f - 2>&1)
+          fi
           echo "$OUTPUT"
           {
             echo "result<<EOF"
@@ -113,16 +147,22 @@ jobs:
           RELEASE_NAME: ${{ inputs.release-name }}
           NAMESPACE: ${{ inputs.namespace }}
           VALUES_FILE: ${{ inputs.values-file }}
+          VALUES_FILES: ${{ inputs.values-files }}
+          DEPLOY_MODE: ${{ inputs.deploy-mode }}
           HELM_OUTPUT: ${{ steps.helm.outputs.result }}
         run: |
           {
             echo "## K8s Deploy (Helm)"
             echo ""
+            echo "**Mode**: \`${DEPLOY_MODE}\`"
             echo "**Release**: \`${RELEASE_NAME}\`"
             echo "**Namespace**: \`${NAMESPACE}\`"
             echo "**Chart path**: \`${CHART_PATH}\`"
             if [ -n "$VALUES_FILE" ]; then
               echo "**Values file**: \`${VALUES_FILE}\`"
+            fi
+            if [ -n "$VALUES_FILES" ]; then
+              echo "**Values files**: \`${VALUES_FILES}\`"
             fi
             echo ""
             echo "### Helm Output"
