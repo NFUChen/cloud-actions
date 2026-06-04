@@ -79,9 +79,11 @@ jobs:
 | `chart-path` | string | yes | -- | Path to Helm chart directory |
 | `release-name` | string | yes | -- | Helm release name |
 | `namespace` | string | no | `default` | Target K8s namespace |
-| `values-file` | string | no | `""` | Path to values file |
+| `values-file` | string | no | `""` | Path to a single values file (deprecated -- prefer `values-files`) |
+| `values-files` | string | no | `""` | Comma-separated list of values file paths; applied in order, later overrides earlier |
 | `set-values` | string | no | `""` | Newline-separated `key=value` pairs for `--set` |
 | `helm-version` | string | no | `latest` | Helm version to install |
+| `deploy-mode` | string | no | `release` | `release` (`helm upgrade --install`) or `template` (`helm template \| kubectl apply`) |
 
 ### Example -- Full
 
@@ -99,7 +101,7 @@ jobs:
       chart-path: "charts/myapp"
       release-name: myapp
       namespace: production
-      values-file: "charts/myapp/values-prod.yaml"
+      values-files: "charts/myapp/values.yaml,charts/myapp/values-prod.yaml"
       set-values: |
         image.tag=${{ github.sha }}
         replicas=3
@@ -125,13 +127,25 @@ jobs:
 
 ### Helm Values Override
 
-Values file + `--set` overrides (set takes precedence):
+Multiple values files + `--set` overrides (later files override earlier; `--set` takes highest precedence):
 
 ```yaml
 with:
-  values-file: "charts/myapp/values-prod.yaml"
+  values-files: "charts/myapp/values.yaml,charts/myapp/values-prod.yaml"
   set-values: |
     image.tag=${{ github.sha }}
+```
+
+### Deploy Mode: Release vs Template
+
+- **`release`** (default): runs `helm upgrade --install`. Helm tracks the release in cluster state (release secret). Use for normal lifecycle management, rollbacks via `helm rollback`.
+- **`template`**: runs `helm template | kubectl apply`. No Helm release is created; manifests are applied as if they were raw YAML. Use for GitOps-style flows where you don't want Helm state in the cluster, or when migrating off Helm.
+
+```yaml
+with:
+  chart-path: "charts/myapp"
+  release-name: myapp
+  deploy-mode: template
 ```
 
 ### Pinning Tool Versions
