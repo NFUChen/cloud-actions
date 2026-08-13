@@ -19,7 +19,7 @@ name: PR Description
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
+    types: [opened, reopened, synchronize, ready_for_review]
 
 jobs:
   rewrite:
@@ -51,6 +51,24 @@ jobs:
     secrets:
       anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
+
+### Draft Pull Requests
+
+Draft PRs are skipped by default to avoid burning API calls on work in progress. The workflow still succeeds; it just reports `skipped (draft PR)` in the job summary.
+
+To rewrite drafts as well:
+
+```yaml
+jobs:
+  rewrite:
+    uses: NFUChen/cloud-actions/.github/workflows/pr-description-rewrite.yml@main
+    with:
+      skip-draft: false
+    secrets:
+      anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+With the default `skip-draft: true`, keep `ready_for_review` in your trigger list so the description is generated once the PR leaves draft state.
 
 ### Custom Anthropic Base URL
 
@@ -101,6 +119,7 @@ jobs:
 | `max-diff-lines` | number | no | `3000` | Maximum number of diff lines included in the prompt |
 | `extra-instructions` | string | no | `""` | Additional tone or formatting instructions |
 | `anthropic-base-url` | string | no | `""` | Anthropic-compatible API base URL; sets `ANTHROPIC_BASE_URL` |
+| `skip-draft` | boolean | no | `true` | Skip the rewrite while the PR is a draft |
 | `pr-number` | number | no | Event PR | Pull request number; for `workflow_dispatch` use |
 
 ## Secrets
@@ -111,11 +130,12 @@ jobs:
 
 ## How It Works
 
-1. **Fetch PR context**: The workflow fetches the PR diff, title, and commit messages
-2. **Truncate if needed**: If the diff exceeds `max-diff-lines`, it's truncated with a note
-3. **Generate prompt**: A prompt is built with the diff, commit context, and any extra instructions
-4. **Run Claude**: Claude Code analyzes the diff and generates a new description
-5. **Update PR**: The PR description is completely rewritten with the generated content
+1. **Check draft status**: If `skip-draft` is enabled and the PR is a draft, the workflow exits early without calling Claude
+2. **Fetch PR context**: The workflow fetches the PR diff, title, and commit messages
+3. **Truncate if needed**: If the diff exceeds `max-diff-lines`, it's truncated with a note
+4. **Generate prompt**: A prompt is built with the diff, commit context, and any extra instructions
+5. **Run Claude**: Claude Code analyzes the diff and generates a new description
+6. **Update PR**: The PR description is completely rewritten with the generated content
 
 ## Generated Description Format
 
@@ -132,7 +152,7 @@ The basic workflow runs on all PRs. To skip certain PRs, you can extend the work
 ```yaml
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
+    types: [opened, reopened, synchronize, ready_for_review]
 
 jobs:
   rewrite:
@@ -150,6 +170,7 @@ The workflow is designed to run when:
 - A PR is **opened** (`opened`)
 - A PR is **reopened** after being closed (`reopened`)
 - New commits are pushed to the PR (`synchronize`)
+- A draft PR is marked ready for review (`ready_for_review`)
 
 This ensures the description stays in sync with the latest changes.
 
