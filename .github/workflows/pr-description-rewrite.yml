@@ -23,6 +23,11 @@ on:
         required: false
         type: string
         default: ""
+      skip-draft:
+        description: "Skip rewriting the description while the PR is a draft"
+        required: false
+        type: boolean
+        default: true
       pr-number:
         description: "Pull request number; defaults to the event pull request"
         required: false
@@ -51,10 +56,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
           MAX_DIFF_LINES: ${{ inputs.max-diff-lines }}
+          SKIP_DRAFT: ${{ inputs.skip-draft }}
         run: |
           if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "0" ]; then
             echo "::error::pr-number is required when the workflow is not called by a pull_request event."
             exit 1
+          fi
+          is_draft=$(gh pr view "$PR_NUMBER" --json isDraft --jq '.isDraft')
+          if [ "$SKIP_DRAFT" = "true" ] && [ "$is_draft" = "true" ]; then
+            echo "PR #$PR_NUMBER is a draft; skipping description rewrite."
+            {
+              echo "pr_number=$PR_NUMBER"
+              echo "diff_lines=0"
+              echo "truncated=false"
+              echo "skipped=true"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           gh pr diff "$PR_NUMBER" > diff-full.txt
           total_lines=$(wc -l < diff-full.txt | tr -d ' ')
@@ -72,9 +89,11 @@ jobs:
             echo "pr_number=$PR_NUMBER"
             echo "diff_lines=$total_lines"
             echo "truncated=$truncated"
+            echo "skipped=false"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build Claude prompt
+        if: ${{ steps.context.outputs.skipped != 'true' }}
         env:
           EXTRA_INSTRUCTIONS: ${{ inputs.extra-instructions }}
         run: |
@@ -101,6 +120,7 @@ jobs:
 
       - name: Run Claude
         id: claude
+        if: ${{ steps.context.outputs.skipped != 'true' }}
         uses: anthropics/claude-code-base-action@beta
         env:
           ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
@@ -110,6 +130,7 @@ jobs:
           claude_args: "--model ${{ inputs.model }}"
 
       - name: Extract generated description
+        if: ${{ steps.context.outputs.skipped != 'true' }}
         env:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
         run: |
@@ -120,6 +141,7 @@ jobs:
           jq -r '[.[] | select(.type == "result") | .result] | last // empty' "$EXECUTION_FILE" > new_body.md
 
       - name: Update PR description
+        if: ${{ steps.context.outputs.skipped != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
@@ -136,12 +158,17 @@ jobs:
           MODEL: ${{ inputs.model }}
           DIFF_LINES: ${{ steps.context.outputs.diff_lines }}
           TRUNCATED: ${{ steps.context.outputs.truncated }}
+          SKIPPED: ${{ steps.context.outputs.skipped }}
         run: |
           {
             echo '## PR Description Rewrite'
             echo
             echo "- **PR**: #$PR_NUMBER"
-            echo "- **Model**: \`$MODEL\`"
-            echo "- **Diff lines**: $DIFF_LINES"
-            echo "- **Diff truncated**: $TRUNCATED"
+            if [ "$SKIPPED" = "true" ]; then
+              echo "- **Status**: skipped (draft PR)"
+            else
+              echo "- **Model**: \`$MODEL\`"
+              echo "- **Diff lines**: $DIFF_LINES"
+              echo "- **Diff truncated**: $TRUNCATED"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"

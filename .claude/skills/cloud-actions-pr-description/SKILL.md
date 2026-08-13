@@ -21,6 +21,7 @@ NFUChen/cloud-actions/.github/workflows/pr-description-rewrite.yml@main
 | `max-diff-lines` | number | no | `3000` | Maximum diff lines included in the prompt |
 | `extra-instructions` | string | no | `""` | Additional tone or formatting instructions |
 | `anthropic-base-url` | string | no | `""` | Optional Anthropic-compatible API base URL (e.g. proxy or gateway) |
+| `skip-draft` | boolean | no | `true` | Skip the rewrite while the PR is a draft |
 | `pr-number` | number | no | PR from event | Pull request number; for `workflow_dispatch` use |
 
 ## Secrets
@@ -36,7 +37,7 @@ name: PR Description
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
+    types: [opened, reopened, synchronize, ready_for_review]
 
 jobs:
   rewrite:
@@ -85,6 +86,20 @@ jobs:
       anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
+### Also Rewrite Draft PRs
+
+Draft PRs are skipped by default. Set `skip-draft: false` to rewrite them too:
+
+```yaml
+jobs:
+  rewrite:
+    uses: NFUChen/cloud-actions/.github/workflows/pr-description-rewrite.yml@main
+    with:
+      skip-draft: false
+    secrets:
+      anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
 ### Manual Trigger via workflow_dispatch
 
 ```yaml
@@ -111,10 +126,11 @@ jobs:
 
 When generating caller workflows:
 
-- Default trigger should be `pull_request: types: [opened, reopened, synchronize]`
+- Default trigger should be `pull_request: types: [opened, reopened, synchronize, ready_for_review]` (`ready_for_review` matters because drafts are skipped by default)
 - Remind the user to store their Anthropic API key as `ANTHROPIC_API_KEY` in repo secrets
 - Only include `extra-instructions` if the user specifies a language, tone, or extra sections
 - Only include `model` if the user wants a different model than the default
 - Only include `anthropic-base-url` if the user mentions a proxy, gateway, or self-hosted Anthropic-compatible endpoint
+- Draft PRs are skipped by default; only set `skip-draft: false` if the user wants drafts rewritten too
 - For `workflow_dispatch` callers, include the `pr-number` input mapping
 - Note that `pull_request` runs from forked repos do not receive secrets, so the workflow only works for same-repo PRs by default
