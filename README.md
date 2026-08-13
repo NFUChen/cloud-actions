@@ -15,6 +15,7 @@ Reusable GitHub Actions workflows and composite actions for common cloud infrast
 | **Docker** | `docker-build-push-acr.yml` | Build & push to Azure ACR |
 | **K8s** | `k8s-deploy-manifest.yml` | Deploy raw K8s manifests via `kubectl apply` |
 | **K8s** | `k8s-deploy-helm.yml` | Deploy Helm charts via `helm upgrade --install` |
+| **Docs** | `pr-description-rewrite.yml` | Rewrite PR description from diff using Claude Code |
 | **Config** | `actions/config-fetch-s3` | Fetch config files from AWS S3 |
 | **Config** | `actions/config-fetch-azure-blob` | Fetch config files from Azure Blob Storage |
 | **Config** | `actions/config-fetch-gcs` | Fetch config files from Google Cloud Storage |
@@ -59,6 +60,7 @@ See the detailed docs for each domain:
 - [Docker (Build & Push)](docs/DOCKER.md)
 - [K8s (Deployment)](docs/K8S.md)
 - [Config Fetch](docs/CONFIG-FETCH.md)
+- [PR Description Rewrite](docs/PR-DESCRIPTION.md)
 
 ## Installing Skills for AI Agents
 
@@ -72,6 +74,7 @@ This repo ships with [Claude Code skills](https://docs.anthropic.com/en/docs/cla
 | `cloud-actions-docker` | Docker build, container image, push to registry |
 | `cloud-actions-k8s` | K8s deploy, kubectl apply, Helm upgrade, cluster deployment |
 | `cloud-actions-config-fetch` | Config fetch, download config, S3 config, Azure Blob config, GCS config, Git config |
+| `cloud-actions-pr-description` | Auto PR description, Claude PR body, AI-generated PR summary |
 
 ### Installation
 
@@ -89,6 +92,7 @@ ln -s ../../.cloud-actions/.claude/skills/cloud-actions-atlas .claude/skills/clo
 ln -s ../../.cloud-actions/.claude/skills/cloud-actions-docker .claude/skills/cloud-actions-docker
 ln -s ../../.cloud-actions/.claude/skills/cloud-actions-k8s .claude/skills/cloud-actions-k8s
 ln -s ../../.cloud-actions/.claude/skills/cloud-actions-config-fetch .claude/skills/cloud-actions-config-fetch
+ln -s ../../.cloud-actions/.claude/skills/cloud-actions-pr-description .claude/skills/cloud-actions-pr-description
 ```
 
 To update later:
@@ -109,6 +113,7 @@ cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-atlas .claude/skills/
 cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-docker .claude/skills/
 cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-k8s .claude/skills/
 cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-config-fetch .claude/skills/
+cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-pr-description .claude/skills/
 
 rm -rf /tmp/cloud-actions
 ```
@@ -123,6 +128,7 @@ cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-atlas ~/.claude/skills/
 cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-docker ~/.claude/skills/
 cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-k8s ~/.claude/skills/
 cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-config-fetch ~/.claude/skills/
+cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-pr-description ~/.claude/skills/
 
 rm -rf /tmp/cloud-actions
 ```
