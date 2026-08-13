@@ -1,0 +1,147 @@
+name: Rewrite PR Description
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: "Claude model ID"
+        required: false
+        type: string
+        default: "claude-sonnet-4-5"
+      max-diff-lines:
+        description: "Maximum number of diff lines included in the prompt"
+        required: false
+        type: number
+        default: 3000
+      extra-instructions:
+        description: "Additional tone or formatting instructions"
+        required: false
+        type: string
+        default: ""
+      anthropic-base-url:
+        description: "Optional Anthropic-compatible API base URL"
+        required: false
+        type: string
+        default: ""
+      pr-number:
+        description: "Pull request number; defaults to the event pull request"
+        required: false
+        type: number
+        default: 0
+    secrets:
+      anthropic-api-key:
+        description: "Anthropic API key"
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  rewrite:
+    name: Rewrite PR Description
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@v4
+
+      - name: Collect PR context and diff
+        id: context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
+          MAX_DIFF_LINES: ${{ inputs.max-diff-lines }}
+        run: |
+          if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "0" ]; then
+            echo "::error::pr-number is required when the workflow is not called by a pull_request event."
+            exit 1
+          fi
+          gh pr diff "$PR_NUMBER" > diff-full.txt
+          total_lines=$(wc -l < diff-full.txt | tr -d ' ')
+          truncated=false
+          if [ "$total_lines" -gt "$MAX_DIFF_LINES" ]; then
+            lines_omitted=$((total_lines - MAX_DIFF_LINES))
+            head -n "$MAX_DIFF_LINES" diff-full.txt > diff.txt
+            printf '\n... (truncated %s lines)\n' "$lines_omitted" >> diff.txt
+            truncated=true
+          else
+            cp diff-full.txt diff.txt
+          fi
+          gh pr view "$PR_NUMBER" --json title,commits > context.json
+          {
+            echo "pr_number=$PR_NUMBER"
+            echo "diff_lines=$total_lines"
+            echo "truncated=$truncated"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build Claude prompt
+        env:
+          EXTRA_INSTRUCTIONS: ${{ inputs.extra-instructions }}
+        run: |
+          {
+            echo '# Rewrite the pull request description'
+            echo
+            echo 'Only use the diff and commit context below. Rewrite the pull request description completely.'
+            echo 'Output only the final Markdown description. Do not add explanations or code fences.'
+            echo
+            echo 'The output must contain these sections:'
+            echo '## Summary'
+            echo '## Changes'
+            echo '## Testing'
+            echo
+            echo 'Additional instructions:'
+            printf '%s\n' "$EXTRA_INSTRUCTIONS"
+            echo
+            echo '## PR context (JSON)'
+            cat context.json
+            echo
+            echo '## Unified diff'
+            cat diff.txt
+          } > prompt.md
+
+      - name: Run Claude
+        id: claude
+        uses: anthropics/claude-code-base-action@beta
+        env:
+          ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
+        with:
+          prompt_file: prompt.md
+          anthropic_api_key: ${{ secrets.anthropic-api-key }}
+          claude_args: "--model ${{ inputs.model }}"
+
+      - name: Extract generated description
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          if [ -z "$EXECUTION_FILE" ] || [ ! -s "$EXECUTION_FILE" ]; then
+            : > new_body.md
+            exit 0
+          fi
+          jq -r '[.[] | select(.type == "result") | .result] | last // empty' "$EXECUTION_FILE" > new_body.md
+
+      - name: Update PR description
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+        run: |
+          if [ ! -s new_body.md ] || [ -z "$(tr -d '[:space:]' < new_body.md)" ]; then
+            echo "::warning::Claude returned an empty PR description; keeping the existing body."
+            exit 0
+          fi
+          gh pr edit "$PR_NUMBER" --body-file new_body.md
+
+      - name: Write job summary
+        env:
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          MODEL: ${{ inputs.model }}
+          DIFF_LINES: ${{ steps.context.outputs.diff_lines }}
+          TRUNCATED: ${{ steps.context.outputs.truncated }}
+        run: |
+          {
+            echo '## PR Description Rewrite'
+            echo
+            echo "- **PR**: #$PR_NUMBER"
+            echo "- **Model**: \`$MODEL\`"
+            echo "- **Diff lines**: $DIFF_LINES"
+            echo "- **Diff truncated**: $TRUNCATED"
+          } >> "$GITHUB_STEP_SUMMARY"
