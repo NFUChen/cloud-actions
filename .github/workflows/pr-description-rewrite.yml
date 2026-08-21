@@ -121,13 +121,13 @@ jobs:
       - name: Run Claude
         id: claude
         if: ${{ steps.context.outputs.skipped != 'true' }}
-        uses: anthropics/claude-code-base-action@beta
+        uses: anthropics/claude-code-base-action@v0.0.63
         env:
           ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
         with:
           prompt_file: prompt.md
           anthropic_api_key: ${{ secrets.anthropic-api-key }}
-          claude_args: "--model ${{ inputs.model }}"
+          model: ${{ inputs.model }}
 
       - name: Extract generated description
         if: ${{ steps.context.outputs.skipped != 'true' }}
