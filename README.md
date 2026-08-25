@@ -16,6 +16,7 @@ Reusable GitHub Actions workflows and composite actions for common cloud infrast
 | **K8s** | `k8s-deploy-manifest.yml` | Deploy raw K8s manifests via `kubectl apply` |
 | **K8s** | `k8s-deploy-helm.yml` | Deploy Helm charts via `helm upgrade --install` |
 | **Docs** | `pr-description-rewrite.yml` | Rewrite PR description from diff using Claude Code |
+| **Docs** | `claude-code-review.yml` | Review PR diffs and post inline Critical/High findings using Claude Code |
 | **Config** | `actions/config-fetch-s3` | Fetch config files from AWS S3 |
 | **Config** | `actions/config-fetch-azure-blob` | Fetch config files from Azure Blob Storage |
 | **Config** | `actions/config-fetch-gcs` | Fetch config files from Google Cloud Storage |
@@ -75,6 +76,7 @@ This repo ships with [Claude Code skills](https://docs.anthropic.com/en/docs/cla
 | `cloud-actions-k8s` | K8s deploy, kubectl apply, Helm upgrade, cluster deployment |
 | `cloud-actions-config-fetch` | Config fetch, download config, S3 config, Azure Blob config, GCS config, Git config |
 | `cloud-actions-pr-description` | Auto PR description, Claude PR body, AI-generated PR summary |
+| `cloud-actions-code-review` | AI code review, Claude PR review, automated code review, inline review comments |
 
 ### Installation
 
@@ -93,6 +95,7 @@ ln -s ../../.cloud-actions/.claude/skills/cloud-actions-docker .claude/skills/cl
 ln -s ../../.cloud-actions/.claude/skills/cloud-actions-k8s .claude/skills/cloud-actions-k8s
 ln -s ../../.cloud-actions/.claude/skills/cloud-actions-config-fetch .claude/skills/cloud-actions-config-fetch
 ln -s ../../.cloud-actions/.claude/skills/cloud-actions-pr-description .claude/skills/cloud-actions-pr-description
+ln -s ../../.cloud-actions/.claude/skills/cloud-actions-code-review .claude/skills/cloud-actions-code-review
 ```
 
 To update later:
@@ -114,6 +117,7 @@ cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-docker .claude/skills/
 cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-k8s .claude/skills/
 cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-config-fetch .claude/skills/
 cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-pr-description .claude/skills/
+cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-code-review .claude/skills/
 
 rm -rf /tmp/cloud-actions
 ```
@@ -129,6 +133,7 @@ cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-docker ~/.claude/skills/
 cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-k8s ~/.claude/skills/
 cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-config-fetch ~/.claude/skills/
 cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-pr-description ~/.claude/skills/
+cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-code-review ~/.claude/skills/
 
 rm -rf /tmp/cloud-actions
 ```
