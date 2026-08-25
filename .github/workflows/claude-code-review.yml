@@ -69,11 +69,16 @@ jobs:
         id: claude-review
         uses: anthropics/claude-code-action@v1
         env:
+          # claude-code-action@v1 has no `model` input; the CLI reads the model
+          # and auth settings from the environment instead.
+          GH_ENTERPRISE_TOKEN: ${{ github.token }}
           ANTHROPIC_BASE_URL: ${{ inputs.anthropic-base-url }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.anthropic-api-key }}
+          ANTHROPIC_MODEL: ${{ inputs.model }}
+          CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: "1"
         with:
           github_token: ${{ github.token }}
           anthropic_api_key: ${{ secrets.anthropic-api-key }}
-          model: ${{ inputs.model }}
           path_to_bun_executable: "${{ env.BUN_EXECUTABLE }}"
           track_progress: true
           use_sticky_comment: true
