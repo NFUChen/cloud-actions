@@ -1,6 +1,6 @@
 # K8s Actions
 
-Reusable GitHub Actions workflows for deploying to Kubernetes clusters. One workflow per deployment method.
+Reusable GitHub Actions workflows for deploying to Kubernetes clusters and a composite action for packaging Helm charts.
 
 ## Workflows
 
@@ -8,6 +8,7 @@ Reusable GitHub Actions workflows for deploying to Kubernetes clusters. One work
 |----------|--------|-------------|
 | `k8s-deploy-manifest.yml` | kubectl apply | Deploy raw K8s manifest files or directories |
 | `k8s-deploy-helm.yml` | helm upgrade --install | Deploy Helm charts with values and overrides |
+| `actions/helm-package-push` | helm package + helm push | Composite action to package Helm charts and push to OCI registries |
 
 ## Prerequisites
 
@@ -91,6 +92,46 @@ jobs:
       kubeconfig: ${{ secrets.KUBECONFIG }}
 ```
 
+### Helm Package & Push to OCI
+
+`helm-package-push` is a composite action, so registry authentication can be done in a previous step in the same job. The action only runs dependency update, lint, package, and push.
+
+```yaml
+name: Package Helm Chart
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write
+  packages: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.0
+
+      # Do vendor-specific OIDC login here, for example:
+      # - aws-actions/configure-aws-credentials@v4 + helm registry login to ECR
+      # - azure/login@v2 + az acr login
+      # - google-github-actions/auth@v2 + gcloud auth configure-docker
+
+      - uses: NFUChen/cloud-actions/.github/actions/helm-package-push@main
+        with:
+          chart-path: "charts/myapp"
+          registry: ghcr.io
+          repository: ${{ github.repository_owner }}/charts
+          chart-version: ${{ github.ref_name }}
+          app-version: ${{ github.sha }}
+```
+
 ## Inputs
 
 ### Manifest Workflow
@@ -101,7 +142,7 @@ jobs:
 | `namespace` | string | no | `default` | Target K8s namespace |
 | `kubectl-version` | string | no | `latest` | kubectl version to install |
 
-### Helm Workflow
+### Helm Deploy Workflow
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
@@ -109,12 +150,28 @@ jobs:
 | `release-name` | string | yes | — | Helm release name |
 | `namespace` | string | no | `default` | Target K8s namespace |
 | `values-file` | string | no | `""` | Path to values file |
+| `values-files` | string | no | `""` | Comma-separated values file paths, applied in order |
 | `set-values` | string | no | `""` | Newline-separated `key=value` pairs for `--set` |
 | `helm-version` | string | no | `latest` | Helm version to install |
+| `deploy-mode` | string | no | `release` | `release` or `template` |
+
+### Helm Package & Push Action
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `chart-path` | yes | — | Path to Helm chart directory |
+| `registry` | yes | — | OCI registry host |
+| `repository` | yes | — | Repository path inside the registry, without chart name |
+| `chart-version` | no | `""` | Chart version override passed to `helm package --version` |
+| `app-version` | no | `""` | App version override passed to `helm package --app-version` |
+| `dependency-update` | no | `true` | Run `helm dependency update` before packaging |
+| `lint` | no | `true` | Run `helm lint` before packaging |
+| `push` | no | `true` | Run `helm push`; set `false` for package-only validation |
+| `destination` | no | `dist` | Output directory for the packaged `.tgz` |
 
 ## Secrets
 
-Both workflows use the same secrets:
+The deploy workflows use these secrets. The Helm package action does not handle registry login; do vendor-specific OIDC auth in a previous step in the same job.
 
 | Name | Required | Description |
 |------|----------|-------------|
@@ -136,11 +193,18 @@ Push to main
         ├─ kubectl cluster-info (connectivity check)
         ├─ helm upgrade --install <release> <chart> -n <namespace>
         └─ writes result to job summary
+
+  └─► caller job authenticates to OCI registry
+        └─► actions/helm-package-push runs
+              ├─ helm dependency update <chart>
+              ├─ helm lint <chart>
+              ├─ helm package <chart>
+              └─ helm push <package> oci://<registry>/<repository>
 ```
 
 ## Pinning Tool Versions
 
-Both workflows accept a version input for reproducibility:
+The deploy workflows accept a version input for reproducibility. For `actions/helm-package-push`, set up Helm before calling the composite action.
 
 ```yaml
 with:

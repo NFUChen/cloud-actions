@@ -1,0 +1,185 @@
+name: Helm Package & Push
+description: Package a Helm chart and push it to an OCI registry. Assumes registry auth is already done by a previous step.
+
+inputs:
+  chart-path:
+    description: "Path to Helm chart directory (relative to repo root)"
+    required: true
+  registry:
+    description: "OCI registry host (e.g. ghcr.io, 123456789012.dkr.ecr.us-east-1.amazonaws.com, myregistry.azurecr.io, us-docker.pkg.dev)"
+    required: true
+  repository:
+    description: "Repository path inside the registry, without the chart name (e.g. myorg/charts, project-id/helm-charts)"
+    required: true
+  chart-version:
+    description: "Chart version override passed to --version. Empty uses the version in Chart.yaml."
+    required: false
+    default: ""
+  app-version:
+    description: "App version override passed to --app-version. Empty uses the appVersion in Chart.yaml."
+    required: false
+    default: ""
+  dependency-update:
+    description: "Run 'helm dependency update' before packaging"
+    required: false
+    default: "true"
+  lint:
+    description: "Run 'helm lint' before packaging. Fails on lint errors."
+    required: false
+    default: "true"
+  push:
+    description: "Whether to push the packaged chart (set false for package-only validation)"
+    required: false
+    default: "true"
+  destination:
+    description: "Local directory to write the packaged .tgz into"
+    required: false
+    default: "dist"
+
+outputs:
+  chart-name:
+    description: "Chart name read from Chart.yaml"
+    value: ${{ steps.meta.outputs.chart-name }}
+  chart-version:
+    description: "Chart version used for packaging"
+    value: ${{ steps.meta.outputs.chart-version }}
+  chart-file:
+    description: "Path to the packaged .tgz file"
+    value: ${{ steps.package.outputs.chart-file }}
+  oci-ref:
+    description: "Full OCI reference of the pushed chart (empty when push is false)"
+    value: ${{ steps.push.outputs.oci-ref }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve chart metadata
+      id: meta
+      shell: bash
+      env:
+        CHART_PATH: ${{ inputs.chart-path }}
+        CHART_VERSION: ${{ inputs.chart-version }}
+      run: |
+        if ! command -v helm >/dev/null 2>&1; then
+          echo "::error::helm not found on PATH. Add a 'azure/setup-helm@v4' step before this action."
+          exit 1
+        fi
+
+        if [ ! -f "$CHART_PATH/Chart.yaml" ]; then
+          echo "::error::No Chart.yaml found at '$CHART_PATH'. Is chart-path pointing at a Helm chart directory?"
+          exit 1
+        fi
+
+        CHART_NAME=$(helm show chart "$CHART_PATH" | awk '$1 == "name:" { print $2; exit }')
+        if [ -z "$CHART_NAME" ]; then
+          echo "::error::Could not read 'name' from $CHART_PATH/Chart.yaml."
+          exit 1
+        fi
+
+        RESOLVED_VERSION="$CHART_VERSION"
+        if [ -z "$RESOLVED_VERSION" ]; then
+          RESOLVED_VERSION=$(helm show chart "$CHART_PATH" | awk '$1 == "version:" { print $2; exit }')
+        fi
+        if [ -z "$RESOLVED_VERSION" ]; then
+          echo "::error::Could not determine chart version. Set chart-version or add 'version' to Chart.yaml."
+          exit 1
+        fi
+
+        echo "chart-name=${CHART_NAME}" >> "$GITHUB_OUTPUT"
+        echo "chart-version=${RESOLVED_VERSION}" >> "$GITHUB_OUTPUT"
+        echo "Chart: ${CHART_NAME} version ${RESOLVED_VERSION}"
+
+    - name: Update chart dependencies
+      if: ${{ inputs.dependency-update == 'true' }}
+      shell: bash
+      env:
+        CHART_PATH: ${{ inputs.chart-path }}
+      run: helm dependency update "$CHART_PATH"
+
+    - name: Lint chart
+      if: ${{ inputs.lint == 'true' }}
+      shell: bash
+      env:
+        CHART_PATH: ${{ inputs.chart-path }}
+      run: helm lint "$CHART_PATH"
+
+    - name: Package chart
+      id: package
+      shell: bash
+      env:
+        CHART_PATH: ${{ inputs.chart-path }}
+        CHART_NAME: ${{ steps.meta.outputs.chart-name }}
+        CHART_VERSION: ${{ steps.meta.outputs.chart-version }}
+        APP_VERSION: ${{ inputs.app-version }}
+        DEST: ${{ inputs.destination }}
+      run: |
+        mkdir -p "$DEST"
+        PACKAGE_ARGS=(--destination "$DEST" --version "$CHART_VERSION")
+        if [ -n "$APP_VERSION" ]; then
+          PACKAGE_ARGS+=(--app-version "$APP_VERSION")
+        fi
+
+        helm package "$CHART_PATH" "${PACKAGE_ARGS[@]}"
+
+        CHART_FILE="${DEST}/${CHART_NAME}-${CHART_VERSION}.tgz"
+        if [ ! -f "$CHART_FILE" ]; then
+          echo "::error::Expected package '$CHART_FILE' was not produced by helm package."
+          exit 1
+        fi
+        echo "chart-file=${CHART_FILE}" >> "$GITHUB_OUTPUT"
+        echo "Packaged ${CHART_FILE}"
+
+    - name: Push chart
+      id: push
+      if: ${{ inputs.push == 'true' }}
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.registry }}
+        REPOSITORY: ${{ inputs.repository }}
+        CHART_NAME: ${{ steps.meta.outputs.chart-name }}
+        CHART_VERSION: ${{ steps.meta.outputs.chart-version }}
+        CHART_FILE: ${{ steps.package.outputs.chart-file }}
+      run: |
+        REPO_PATH="${REPOSITORY#/}"
+        REPO_PATH="${REPO_PATH%/}"
+        helm push "$CHART_FILE" "oci://${REGISTRY}/${REPO_PATH}"
+
+        OCI_REF="${REGISTRY}/${REPO_PATH}/${CHART_NAME}:${CHART_VERSION}"
+        echo "oci-ref=${OCI_REF}" >> "$GITHUB_OUTPUT"
+        echo "Pushed ${OCI_REF}"
+
+    - name: Write job summary
+      shell: bash
+      env:
+        CHART_PATH: ${{ inputs.chart-path }}
+        CHART_NAME: ${{ steps.meta.outputs.chart-name }}
+        CHART_VERSION: ${{ steps.meta.outputs.chart-version }}
+        APP_VERSION: ${{ inputs.app-version }}
+        CHART_FILE: ${{ steps.package.outputs.chart-file }}
+        OCI_REF: ${{ steps.push.outputs.oci-ref }}
+        PUSH: ${{ inputs.push }}
+      run: |
+        {
+          echo "## Helm Package & Push"
+          echo ""
+          if [ "$PUSH" = "true" ]; then
+            echo "**Status**: Pushed"
+          else
+            echo "**Status**: Packaged (not pushed)"
+          fi
+          echo "**Chart path**: \`${CHART_PATH}\`"
+          echo "**Chart**: \`${CHART_NAME}\`"
+          echo "**Chart version**: \`${CHART_VERSION}\`"
+          if [ -n "$APP_VERSION" ]; then
+            echo "**App version**: \`${APP_VERSION}\`"
+          fi
+          echo "**Package**: \`${CHART_FILE}\`"
+          if [ -n "$OCI_REF" ]; then
+            echo ""
+            echo "### OCI Reference"
+            echo ""
+            echo '```'
+            echo "${OCI_REF}"
+            echo '```'
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"

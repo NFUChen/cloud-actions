@@ -1,18 +1,19 @@
 ---
 name: cloud-actions-k8s
-description: Generate GitHub Actions caller workflows for Kubernetes deployment via kubectl manifests or Helm charts. Use this skill whenever the user mentions K8s deployment, Kubernetes CI/CD, kubectl apply, Helm deploy, Helm upgrade, deploying to a cluster, or wants to set up automated Kubernetes deployment pipelines in GitHub Actions. Also use when the user asks about cloud-actions K8s workflows, container orchestration CI/CD, or deploying apps to Kubernetes.
+description: Generate GitHub Actions caller workflows for Kubernetes deployment via kubectl manifests or Helm charts, and Helm chart packaging/publishing to OCI registries. Use this skill whenever the user mentions K8s deployment, Kubernetes CI/CD, kubectl apply, Helm deploy, Helm upgrade, helm package, helm push, chart publishing, deploying to a cluster, or wants to set up automated Kubernetes or Helm chart pipelines in GitHub Actions. Also use when the user asks about cloud-actions K8s workflows, container orchestration CI/CD, or deploying apps to Kubernetes.
 ---
 
-# K8s Deploy Workflows
+# K8s Deploy Workflows and Helm Package Action
 
-Generate caller workflow YAML for the `NFUChen/cloud-actions` K8s reusable workflows. Two workflows: one for raw manifests, one for Helm charts.
+Generate caller workflow YAML for the `NFUChen/cloud-actions` K8s reusable workflows and Helm package composite action.
 
-## Available Workflows
+## Available Workflows / Actions
 
-| Workflow | File | Method |
-|----------|------|--------|
-| Manifest | `k8s-deploy-manifest.yml` | `kubectl apply` -- deploy raw YAML manifests |
-| Helm | `k8s-deploy-helm.yml` | `helm upgrade --install` -- deploy Helm charts |
+| Type | File | Method |
+|------|------|--------|
+| Manifest workflow | `k8s-deploy-manifest.yml` | `kubectl apply` -- deploy raw YAML manifests |
+| Helm deploy workflow | `k8s-deploy-helm.yml` | `helm upgrade --install` -- deploy Helm charts |
+| Helm package action | `.github/actions/helm-package-push` | `helm dependency update`, `helm lint`, `helm package`, `helm push` to OCI |
 
 ## Choosing the Right Workflow
 
@@ -123,6 +124,58 @@ jobs:
       kubeconfig: ${{ secrets.KUBECONFIG }}
 ```
 
+## Helm Package & Push Action Reference
+
+Use `.github/actions/helm-package-push` when the user wants to package a Helm chart and push it to an OCI registry. This is a composite action, not a reusable workflow, so registry authentication must happen in an earlier step in the same job. Do not add username/password secrets unless the user explicitly asks; vendor registries commonly use OIDC in previous steps.
+
+### Inputs
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `chart-path` | yes | -- | Path to Helm chart directory |
+| `registry` | yes | -- | OCI registry host |
+| `repository` | yes | -- | Repository path inside registry, without chart name |
+| `chart-version` | no | `""` | Override for `helm package --version` |
+| `app-version` | no | `""` | Override for `helm package --app-version` |
+| `dependency-update` | no | `true` | Run `helm dependency update` |
+| `lint` | no | `true` | Run `helm lint` |
+| `push` | no | `true` | Run `helm push`; set false for package-only validation |
+| `destination` | no | `dist` | Output directory for `.tgz` |
+
+### Chart version vs app version
+
+When generating Helm package workflows, be explicit about the difference:
+
+- `chart-version` / `Chart.yaml.version` is the Helm chart package version: templates, values, dependencies, and chart metadata. Helm uses it for the `.tgz` filename (`myapp-1.4.2.tgz`), chart repository ordering, and dependency version matching. It should be SemVer and should change whenever chart content changes, even if application code does not.
+- `app-version` / `Chart.yaml.appVersion` is metadata describing the application version the chart deploys by default. Helm does not use it for dependency resolution. It can be a SemVer, image tag, date, or commit SHA, and templates may reference it via `.Chart.AppVersion`, commonly for image tags or `app.kubernetes.io/version` labels.
+
+Common mistake to avoid: CI overrides `chart-version` on every run but leaves `app-version` unchanged. The chart package version keeps changing, but the deployed image may stay the same, which is misleading during debugging. When the workflow is packaging a chart for a newly built image, usually set both values: `chart-version` to a unique chart release version and `app-version` to the image tag or commit SHA.
+
+### Example -- Package and push after caller-managed auth
+
+```yaml
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.0
+      # Caller does OCI auth here (AWS/Azure/GCP/GHCR/etc.)
+      - uses: NFUChen/cloud-actions/.github/actions/helm-package-push@main
+        with:
+          chart-path: "charts/myapp"
+          registry: ghcr.io
+          repository: ${{ github.repository_owner }}/charts
+          chart-version: ${{ github.ref_name }}
+          app-version: ${{ github.sha }}
+```
+
 ## Common Patterns
 
 ### Helm Values Override
@@ -196,6 +249,8 @@ When generating caller workflows:
 - Ask whether the user has raw manifests or a Helm chart if not clear
 - Always ask for the namespace -- don't assume `default`
 - Include `wg-config-file` only if user mentions VPN or private cluster
-- For Helm, always ask for the release name -- it's required and must be meaningful
+- For Helm deploy, always ask for the release name -- it's required and must be meaningful
+- For Helm package/push, generate a normal job with steps; do not use `workflow_call` because prior auth steps must share the same runner
+- For Helm package/push, assume the caller handles OCI registry auth before the action unless they explicitly ask for auth steps
 - If user mentions Docker build + deploy, generate the combined pipeline pattern with `needs: build`
-- Remind user to base64-encode their kubeconfig and store it as `KUBECONFIG` secret
+- Remind user to base64-encode their kubeconfig and store it as `KUBECONFIG` secret only for deploy workflows
