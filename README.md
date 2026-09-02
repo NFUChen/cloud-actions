@@ -15,6 +15,7 @@ Reusable GitHub Actions workflows and composite actions for common cloud infrast
 | **Docker** | `docker-build-push-acr.yml` | Build & push to Azure ACR |
 | **K8s** | `k8s-deploy-manifest.yml` | Deploy raw K8s manifests via `kubectl apply` |
 | **K8s** | `k8s-deploy-helm.yml` | Deploy Helm charts via `helm upgrade --install` |
+| **K8s** | `actions/helm-package-push` | Package Helm charts and push to OCI registries |
 | **Docs** | `pr-description-rewrite.yml` | Rewrite PR description from diff using Claude Code |
 | **Docs** | `claude-code-review.yml` | Review PR diffs and post inline Critical/High findings using Claude Code |
 | **Config** | `actions/config-fetch-s3` | Fetch config files from AWS S3 |
