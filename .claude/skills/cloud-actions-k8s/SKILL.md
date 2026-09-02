@@ -142,6 +142,15 @@ Use `.github/actions/helm-package-push` when the user wants to package a Helm ch
 | `push` | no | `true` | Run `helm push`; set false for package-only validation |
 | `destination` | no | `dist` | Output directory for `.tgz` |
 
+### Chart version vs app version
+
+When generating Helm package workflows, be explicit about the difference:
+
+- `chart-version` / `Chart.yaml.version` is the Helm chart package version: templates, values, dependencies, and chart metadata. Helm uses it for the `.tgz` filename (`myapp-1.4.2.tgz`), chart repository ordering, and dependency version matching. It should be SemVer and should change whenever chart content changes, even if application code does not.
+- `app-version` / `Chart.yaml.appVersion` is metadata describing the application version the chart deploys by default. Helm does not use it for dependency resolution. It can be a SemVer, image tag, date, or commit SHA, and templates may reference it via `.Chart.AppVersion`, commonly for image tags or `app.kubernetes.io/version` labels.
+
+Common mistake to avoid: CI overrides `chart-version` on every run but leaves `app-version` unchanged. The chart package version keeps changing, but the deployed image may stay the same, which is misleading during debugging. When the workflow is packaging a chart for a newly built image, usually set both values: `chart-version` to a unique chart release version and `app-version` to the image tag or commit SHA.
+
 ### Example -- Package and push after caller-managed auth
 
 ```yaml
