@@ -1,0 +1,237 @@
+name: pgschema Apply
+
+on:
+  workflow_call:
+    inputs:
+      schema-file:
+        description: "Path to the desired-state SQL schema file (relative to repo root). Used when plan-artifact-name is empty."
+        required: false
+        type: string
+        default: ""
+      plan-artifact-name:
+        description: "Name of a plan artifact produced by pgschema-plan.yml. When set, the reviewed plan.json is applied and the database fingerprint is validated."
+        required: false
+        type: string
+        default: ""
+      plan-run-id:
+        description: "Workflow run ID to download the plan artifact from. Defaults to the current run (same-run plan then apply)."
+        required: false
+        type: string
+        default: ""
+      schema:
+        description: "Target PostgreSQL schema name"
+        required: false
+        type: string
+        default: "public"
+      pgschema-version:
+        description: "pgschema release tag to install. Must match the version that produced the plan artifact."
+        required: false
+        type: string
+        default: "v1.12.5"
+      lock-timeout:
+        description: "Maximum time to wait for database locks (e.g. '30s', '5m'). Empty uses PostgreSQL's default of waiting indefinitely."
+        required: false
+        type: string
+        default: ""
+      application-name:
+        description: "Application name for the database connection, visible in pg_stat_activity"
+        required: false
+        type: string
+        default: "pgschema"
+      environment:
+        description: "GitHub Environment name for an approval gate (e.g. production). Empty runs without a gate."
+        required: false
+        type: string
+        default: ""
+      also-proxy:
+        description: "Comma-separated CIDR ranges to also proxy through Telepresence (e.g. '10.0.0.0/8')"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      db-host:
+        description: "Database server host"
+        required: true
+      db-port:
+        description: "Database server port (defaults to 5432 when empty)"
+        required: false
+      db-name:
+        description: "Database name"
+        required: true
+      db-user:
+        description: "Database user name"
+        required: true
+      db-password:
+        description: "Database password (exported as PGPASSWORD)"
+        required: true
+      db-sslmode:
+        description: "SSL mode for the database connection (disable, allow, prefer, require, verify-ca, verify-full)"
+        required: false
+      wg-config-file:
+        description: "WireGuard configuration file content for VPN tunnel"
+        required: false
+      kubeconfig:
+        description: "Kubeconfig file content (base64 encoded) for Telepresence connection to K8s cluster"
+        required: false
+
+jobs:
+  apply:
+    name: Schema Apply
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@v4
+
+      - name: Validate inputs
+        env:
+          SCHEMA_FILE: ${{ inputs.schema-file }}
+          PLAN_ARTIFACT_NAME: ${{ inputs.plan-artifact-name }}
+        run: |
+          if [ -z "$SCHEMA_FILE" ] && [ -z "$PLAN_ARTIFACT_NAME" ]; then
+            echo "::error::Either schema-file or plan-artifact-name must be set."
+            exit 1
+          fi
+          if [ -n "$SCHEMA_FILE" ] && [ -n "$PLAN_ARTIFACT_NAME" ]; then
+            echo "::error::schema-file and plan-artifact-name are mutually exclusive. Set only one."
+            exit 1
+          fi
+          if [ -n "$SCHEMA_FILE" ] && [ ! -f "$SCHEMA_FILE" ]; then
+            echo "::error::Schema file '$SCHEMA_FILE' not found in the caller repo."
+            exit 1
+          fi
+
+      - name: Validate network config
+        env:
+          WG: ${{ secrets.wg-config-file }}
+          KC: ${{ secrets.kubeconfig }}
+        run: |
+          if [ -n "$WG" ] && [ -n "$KC" ]; then
+            echo "::error::Both wg-config-file and kubeconfig are set. Only one network tunnel is allowed."
+            exit 1
+          fi
+
+      - name: Download plan artifact from current run
+        if: ${{ inputs.plan-artifact-name != '' && inputs.plan-run-id == '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.plan-artifact-name }}
+          path: plan-output
+
+      - name: Download plan artifact from specific run
+        if: ${{ inputs.plan-artifact-name != '' && inputs.plan-run-id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.plan-artifact-name }}
+          path: plan-output
+          run-id: ${{ inputs.plan-run-id }}
+          github-token: ${{ github.token }}
+
+      - name: Validate plan artifact
+        if: ${{ inputs.plan-artifact-name != '' }}
+        run: |
+          if [ ! -f plan-output/plan.json ]; then
+            echo "::error::plan.json not found in the downloaded artifact '${{ inputs.plan-artifact-name }}'."
+            exit 1
+          fi
+          echo "Plan to apply:"
+          cat plan-output/plan.txt 2>/dev/null || true
+
+      - name: Set up WireGuard connection
+        if: ${{ env.WG_CONFIG_FILE != '' }}
+        uses: NFUChen/cloud-actions/.github/actions/wireguard@main
+        env:
+          WG_CONFIG_FILE: ${{ secrets.wg-config-file }}
+        with:
+          WG_CONFIG_FILE: ${{ secrets.wg-config-file }}
+
+      - name: Set up Telepresence connection
+        if: ${{ env.KUBECONFIG_CONTENT != '' }}
+        uses: NFUChen/cloud-actions/.github/actions/telepresence@main
+        env:
+          KUBECONFIG_CONTENT: ${{ secrets.kubeconfig }}
+        with:
+          kubeconfig: ${{ secrets.kubeconfig }}
+          also-proxy: ${{ inputs.also-proxy }}
+
+      - name: Check database connectivity
+        env:
+          DB_HOST: ${{ secrets.db-host }}
+          DB_PORT: ${{ secrets.db-port }}
+        run: |
+          DB_PORT="${DB_PORT:-5432}"
+          echo "Testing connectivity to ${DB_HOST}:${DB_PORT}..."
+          if ! nc -zv -w 10 "$DB_HOST" "$DB_PORT" 2>&1; then
+            echo "::error::Cannot reach database at ${DB_HOST}:${DB_PORT}. Aborting apply."
+            exit 1
+          fi
+          echo "Database connectivity check passed."
+
+      - name: Set up pgschema
+        uses: NFUChen/cloud-actions/.github/actions/setup-pgschema@main
+        with:
+          pgschema-version: ${{ inputs.pgschema-version }}
+
+      - name: Apply schema changes
+        id: apply
+        env:
+          PGHOST: ${{ secrets.db-host }}
+          PGPORT: ${{ secrets.db-port }}
+          PGDATABASE: ${{ secrets.db-name }}
+          PGUSER: ${{ secrets.db-user }}
+          PGPASSWORD: ${{ secrets.db-password }}
+          PGSSLMODE: ${{ secrets.db-sslmode }}
+          PGAPPNAME: ${{ inputs.application-name }}
+          SCHEMA_FILE: ${{ inputs.schema-file }}
+          PLAN_ARTIFACT_NAME: ${{ inputs.plan-artifact-name }}
+          SCHEMA: ${{ inputs.schema }}
+          LOCK_TIMEOUT: ${{ inputs.lock-timeout }}
+        run: |
+          export PGPORT="${PGPORT:-5432}"
+          export PGSSLMODE="${PGSSLMODE:-prefer}"
+
+          APPLY_ARGS=(--schema "$SCHEMA" --auto-approve --no-color)
+          if [ -n "$LOCK_TIMEOUT" ]; then
+            APPLY_ARGS+=(--lock-timeout "$LOCK_TIMEOUT")
+          fi
+
+          if [ -n "$PLAN_ARTIFACT_NAME" ]; then
+            APPLY_ARGS+=(--plan plan-output/plan.json)
+          else
+            APPLY_ARGS+=(--file "$SCHEMA_FILE")
+          fi
+
+          set -o pipefail
+          pgschema apply "${APPLY_ARGS[@]}" 2>&1 | tee apply-output.txt
+
+      - name: Write apply result to job summary
+        if: ${{ always() && steps.apply.conclusion != 'skipped' }}
+        env:
+          SCHEMA_FILE: ${{ inputs.schema-file }}
+          PLAN_ARTIFACT_NAME: ${{ inputs.plan-artifact-name }}
+          SCHEMA: ${{ inputs.schema }}
+          PGSCHEMA_VERSION: ${{ inputs.pgschema-version }}
+          LOCK_TIMEOUT: ${{ inputs.lock-timeout }}
+          APPLY_OUTCOME: ${{ steps.apply.outcome }}
+        run: |
+          {
+            echo "## pgschema Apply"
+            echo ""
+            echo "**Status**: ${APPLY_OUTCOME}"
+            if [ -n "$PLAN_ARTIFACT_NAME" ]; then
+              echo "**Source**: plan artifact \`${PLAN_ARTIFACT_NAME}\` (fingerprint validated)"
+            else
+              echo "**Source**: schema file \`${SCHEMA_FILE}\`"
+            fi
+            echo "**Schema**: \`${SCHEMA}\`"
+            echo "**pgschema version**: \`${PGSCHEMA_VERSION}\`"
+            if [ -n "$LOCK_TIMEOUT" ]; then
+              echo "**Lock timeout**: \`${LOCK_TIMEOUT}\`"
+            fi
+            echo ""
+            echo "### Output"
+            echo ""
+            echo '```'
+            cat apply-output.txt 2>/dev/null || echo "(no output captured)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
