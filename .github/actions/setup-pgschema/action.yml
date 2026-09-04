@@ -1,0 +1,118 @@
+name: Setup pgschema
+description: Install pgschema CLI from GitHub releases and add it to PATH
+
+inputs:
+  pgschema-version:
+    description: "pgschema release tag to install (e.g. v1.12.5)"
+    required: false
+    default: "v1.12.5"
+  install-dir:
+    description: "Directory to install the pgschema binary into"
+    required: false
+    default: "$RUNNER_TEMP/pgschema/bin"
+
+outputs:
+  pgschema-version:
+    description: "Installed pgschema version tag"
+    value: ${{ steps.resolve.outputs.pgschema-version }}
+  binary-path:
+    description: "Installed pgschema binary path"
+    value: ${{ steps.install.outputs.binary-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve platform
+      id: resolve
+      shell: bash
+      env:
+        PGSCHEMA_VERSION: ${{ inputs.pgschema-version }}
+      run: |
+        if [ -z "$PGSCHEMA_VERSION" ]; then
+          echo "::error::pgschema-version must not be empty."
+          exit 1
+        fi
+
+        case "${RUNNER_OS}" in
+          Linux)
+            OS="linux"
+            ;;
+          macOS)
+            OS="darwin"
+            ;;
+          *)
+            echo "::error::Unsupported runner OS '${RUNNER_OS}'. pgschema supports Linux and macOS runners."
+            exit 1
+            ;;
+        esac
+
+        case "$(uname -m)" in
+          x86_64|amd64)
+            ARCH="amd64"
+            ;;
+          arm64|aarch64)
+            ARCH="arm64"
+            ;;
+          *)
+            echo "::error::Unsupported runner architecture '$(uname -m)'. pgschema supports amd64 and arm64."
+            exit 1
+            ;;
+        esac
+
+        VERSION_NUMBER="${PGSCHEMA_VERSION#v}"
+        ASSET_NAME="pgschema-${VERSION_NUMBER}-${OS}-${ARCH}"
+        DOWNLOAD_URL="https://github.com/pgplex/pgschema/releases/download/${PGSCHEMA_VERSION}/${ASSET_NAME}"
+
+        echo "os=${OS}" >> "$GITHUB_OUTPUT"
+        echo "arch=${ARCH}" >> "$GITHUB_OUTPUT"
+        echo "asset-name=${ASSET_NAME}" >> "$GITHUB_OUTPUT"
+        echo "download-url=${DOWNLOAD_URL}" >> "$GITHUB_OUTPUT"
+        echo "pgschema-version=${PGSCHEMA_VERSION}" >> "$GITHUB_OUTPUT"
+
+    - name: Install pgschema
+      id: install
+      shell: bash
+      env:
+        DOWNLOAD_URL: ${{ steps.resolve.outputs.download-url }}
+        INSTALL_DIR: ${{ inputs.install-dir }}
+      run: |
+        if [ -z "$INSTALL_DIR" ]; then
+          echo "::error::install-dir must not be empty."
+          exit 1
+        fi
+
+        mkdir -p "$INSTALL_DIR"
+        BINARY_PATH="${INSTALL_DIR%/}/pgschema"
+
+        curl -fsSL "$DOWNLOAD_URL" -o "$BINARY_PATH"
+        chmod +x "$BINARY_PATH"
+
+        echo "$INSTALL_DIR" >> "$GITHUB_PATH"
+        echo "binary-path=${BINARY_PATH}" >> "$GITHUB_OUTPUT"
+
+    - name: Verify pgschema
+      shell: bash
+      env:
+        BINARY_PATH: ${{ steps.install.outputs.binary-path }}
+      run: |
+        "$BINARY_PATH" --help >/dev/null
+        "$BINARY_PATH" version || true
+
+    - name: Write job summary
+      shell: bash
+      env:
+        PGSCHEMA_VERSION: ${{ steps.resolve.outputs.pgschema-version }}
+        ASSET_NAME: ${{ steps.resolve.outputs.asset-name }}
+        BINARY_PATH: ${{ steps.install.outputs.binary-path }}
+      run: |
+        {
+          echo "## Setup pgschema"
+          echo ""
+          echo "**Version**: \`${PGSCHEMA_VERSION}\`"
+          echo "**Asset**: \`${ASSET_NAME}\`"
+          echo "**Binary**: \`${BINARY_PATH}\`"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+branding:
+  icon: database
+  color: blue

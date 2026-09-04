@@ -1,0 +1,255 @@
+name: pgschema Dump
+
+on:
+  workflow_call:
+    inputs:
+      schema:
+        description: "PostgreSQL schema name to dump"
+        required: false
+        type: string
+        default: "public"
+      pgschema-version:
+        description: "pgschema release tag to install"
+        required: false
+        type: string
+        default: "v1.12.5"
+      multi-file:
+        description: "Split the dump into per-object-type files with a main file containing include directives"
+        required: false
+        type: boolean
+        default: false
+      no-comments:
+        description: "Omit per-object comment headers from the dump"
+        required: false
+        type: boolean
+        default: false
+      qualify-schema:
+        description: "Force full schema qualification of object identifiers in the dump"
+        required: false
+        type: boolean
+        default: false
+      output-path:
+        description: "If set, commits the dumped schema to this path in the repo (e.g. 'schema/schema.sql'). Requires the pat secret."
+        required: false
+        type: string
+        default: ""
+      target-branch:
+        description: "Branch to commit to when output-path is set"
+        required: false
+        type: string
+        default: "main"
+      commit-message:
+        description: "Commit message used when output-path is set"
+        required: false
+        type: string
+        default: "chore: update schema from pgschema dump"
+      artifact-name:
+        description: "Name of the uploaded dump artifact"
+        required: false
+        type: string
+        default: "pgschema-dump"
+      artifact-retention-days:
+        description: "Retention period in days for the uploaded dump artifact"
+        required: false
+        type: number
+        default: 30
+      also-proxy:
+        description: "Comma-separated CIDR ranges to also proxy through Telepresence (e.g. '10.0.0.0/8')"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      db-host:
+        description: "Database server host"
+        required: true
+      db-port:
+        description: "Database server port (defaults to 5432 when empty)"
+        required: false
+      db-name:
+        description: "Database name"
+        required: true
+      db-user:
+        description: "Database user name"
+        required: true
+      db-password:
+        description: "Database password (exported as PGPASSWORD)"
+        required: true
+      db-sslmode:
+        description: "SSL mode for the database connection (disable, allow, prefer, require, verify-ca, verify-full)"
+        required: false
+      wg-config-file:
+        description: "WireGuard configuration file content for VPN tunnel"
+        required: false
+      kubeconfig:
+        description: "Kubeconfig file content (base64 encoded) for Telepresence connection to K8s cluster"
+        required: false
+      pat:
+        description: "Personal access token for pushing commits (required when output-path is set)"
+        required: false
+
+jobs:
+  dump:
+    name: Schema Dump
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@v4
+
+      - name: Validate inputs
+        env:
+          OUTPUT_PATH: ${{ inputs.output-path }}
+          PAT: ${{ secrets.pat }}
+        run: |
+          if [ -n "$OUTPUT_PATH" ] && [ -z "$PAT" ]; then
+            echo "::error::output-path is set but the pat secret is missing. A personal access token is required to push commits."
+            exit 1
+          fi
+
+      - name: Validate network config
+        env:
+          WG: ${{ secrets.wg-config-file }}
+          KC: ${{ secrets.kubeconfig }}
+        run: |
+          if [ -n "$WG" ] && [ -n "$KC" ]; then
+            echo "::error::Both wg-config-file and kubeconfig are set. Only one network tunnel is allowed."
+            exit 1
+          fi
+
+      - name: Set up WireGuard connection
+        if: ${{ env.WG_CONFIG_FILE != '' }}
+        uses: NFUChen/cloud-actions/.github/actions/wireguard@main
+        env:
+          WG_CONFIG_FILE: ${{ secrets.wg-config-file }}
+        with:
+          WG_CONFIG_FILE: ${{ secrets.wg-config-file }}
+
+      - name: Set up Telepresence connection
+        if: ${{ env.KUBECONFIG_CONTENT != '' }}
+        uses: NFUChen/cloud-actions/.github/actions/telepresence@main
+        env:
+          KUBECONFIG_CONTENT: ${{ secrets.kubeconfig }}
+        with:
+          kubeconfig: ${{ secrets.kubeconfig }}
+          also-proxy: ${{ inputs.also-proxy }}
+
+      - name: Check database connectivity
+        env:
+          DB_HOST: ${{ secrets.db-host }}
+          DB_PORT: ${{ secrets.db-port }}
+        run: |
+          DB_PORT="${DB_PORT:-5432}"
+          echo "Testing connectivity to ${DB_HOST}:${DB_PORT}..."
+          if ! nc -zv -w 10 "$DB_HOST" "$DB_PORT" 2>&1; then
+            echo "::error::Cannot reach database at ${DB_HOST}:${DB_PORT}. Aborting dump."
+            exit 1
+          fi
+          echo "Database connectivity check passed."
+
+      - name: Set up pgschema
+        uses: NFUChen/cloud-actions/.github/actions/setup-pgschema@main
+        with:
+          pgschema-version: ${{ inputs.pgschema-version }}
+
+      - name: Dump database schema
+        env:
+          PGHOST: ${{ secrets.db-host }}
+          PGPORT: ${{ secrets.db-port }}
+          PGDATABASE: ${{ secrets.db-name }}
+          PGUSER: ${{ secrets.db-user }}
+          PGPASSWORD: ${{ secrets.db-password }}
+          PGSSLMODE: ${{ secrets.db-sslmode }}
+          SCHEMA: ${{ inputs.schema }}
+          MULTI_FILE: ${{ inputs.multi-file }}
+          NO_COMMENTS: ${{ inputs.no-comments }}
+          QUALIFY_SCHEMA: ${{ inputs.qualify-schema }}
+        run: |
+          export PGPORT="${PGPORT:-5432}"
+          export PGSSLMODE="${PGSSLMODE:-prefer}"
+
+          mkdir -p dump-output
+          DUMP_ARGS=(--schema "$SCHEMA")
+          if [ "$NO_COMMENTS" = "true" ]; then
+            DUMP_ARGS+=(--no-comments)
+          fi
+          if [ "$QUALIFY_SCHEMA" = "true" ]; then
+            DUMP_ARGS+=(--qualify-schema)
+          fi
+
+          # Multi-file mode requires --file and writes a directory tree next to it.
+          if [ "$MULTI_FILE" = "true" ]; then
+            pgschema dump "${DUMP_ARGS[@]}" --multi-file --file dump-output/schema.sql
+          else
+            pgschema dump "${DUMP_ARGS[@]}" > dump-output/schema.sql
+          fi
+
+          if [ ! -s dump-output/schema.sql ]; then
+            echo "::error::pgschema dump produced an empty schema.sql."
+            exit 1
+          fi
+
+      - name: Write dump to job summary
+        env:
+          SCHEMA: ${{ inputs.schema }}
+          PGSCHEMA_VERSION: ${{ inputs.pgschema-version }}
+          MULTI_FILE: ${{ inputs.multi-file }}
+        run: |
+          {
+            echo "## pgschema Dump"
+            echo ""
+            echo "**Schema**: \`${SCHEMA}\`"
+            echo "**pgschema version**: \`${PGSCHEMA_VERSION}\`"
+            echo "**Multi-file**: \`${MULTI_FILE}\`"
+            echo ""
+            echo "### Current Schema"
+            echo ""
+            echo '```sql'
+            cat dump-output/schema.sql
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload dump artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: dump-output/
+          retention-days: ${{ inputs.artifact-retention-days }}
+
+      - name: Commit dump to repo
+        if: ${{ inputs.output-path != '' }}
+        env:
+          OUTPUT_PATH: ${{ inputs.output-path }}
+          TARGET_BRANCH: ${{ inputs.target-branch }}
+          COMMIT_MESSAGE: ${{ inputs.commit-message }}
+          MULTI_FILE: ${{ inputs.multi-file }}
+          PAT: ${{ secrets.pat }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${PAT}@github.com/${{ github.repository }}.git"
+
+          if git fetch origin "$TARGET_BRANCH" 2>/dev/null; then
+            git checkout "$TARGET_BRANCH"
+          else
+            echo "Branch '$TARGET_BRANCH' does not exist on remote. Creating it."
+            git checkout --orphan "$TARGET_BRANCH"
+            git rm -rf . 2>/dev/null || true
+          fi
+
+          OUTPUT_DIR="$(dirname "$OUTPUT_PATH")"
+          mkdir -p "$OUTPUT_DIR"
+
+          if [ "$MULTI_FILE" = "true" ]; then
+            # Multi-file dumps reference sibling directories via \i includes,
+            # so the whole tree has to land next to the main file.
+            cp -R dump-output/. "$OUTPUT_DIR"/
+            mv "${OUTPUT_DIR}/schema.sql" "$OUTPUT_PATH"
+            git add "$OUTPUT_DIR"
+          else
+            cp dump-output/schema.sql "$OUTPUT_PATH"
+            git add "$OUTPUT_PATH"
+          fi
+
+          git diff --cached --quiet || {
+            git commit -m "$COMMIT_MESSAGE"
+            git push origin "$TARGET_BRANCH"
+          }

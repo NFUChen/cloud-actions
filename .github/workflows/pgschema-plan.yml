@@ -1,0 +1,197 @@
+name: pgschema Plan
+
+on:
+  workflow_call:
+    inputs:
+      schema-file:
+        description: "Path to the desired-state SQL schema file (relative to repo root)"
+        required: true
+        type: string
+      schema:
+        description: "Target PostgreSQL schema name"
+        required: false
+        type: string
+        default: "public"
+      pgschema-version:
+        description: "pgschema release tag to install. Must match the version used by pgschema-apply.yml."
+        required: false
+        type: string
+        default: "v1.12.5"
+      artifact-name:
+        description: "Name of the uploaded plan artifact. The apply workflow must download the same name."
+        required: false
+        type: string
+        default: "pgschema-plan"
+      artifact-retention-days:
+        description: "Retention period in days for the uploaded plan artifact"
+        required: false
+        type: number
+        default: 30
+      fail-on-changes:
+        description: "Fail the job when the plan contains any changes. Useful as a drift-detection gate."
+        required: false
+        type: boolean
+        default: false
+      also-proxy:
+        description: "Comma-separated CIDR ranges to also proxy through Telepresence (e.g. '10.0.0.0/8')"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      db-host:
+        description: "Database server host"
+        required: true
+      db-port:
+        description: "Database server port (defaults to 5432 when empty)"
+        required: false
+      db-name:
+        description: "Database name"
+        required: true
+      db-user:
+        description: "Database user name"
+        required: true
+      db-password:
+        description: "Database password (exported as PGPASSWORD)"
+        required: true
+      db-sslmode:
+        description: "SSL mode for the database connection (disable, allow, prefer, require, verify-ca, verify-full)"
+        required: false
+      wg-config-file:
+        description: "WireGuard configuration file content for VPN tunnel"
+        required: false
+      kubeconfig:
+        description: "Kubeconfig file content (base64 encoded) for Telepresence connection to K8s cluster"
+        required: false
+
+jobs:
+  plan:
+    name: Schema Plan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@v4
+
+      - name: Validate network config
+        env:
+          WG: ${{ secrets.wg-config-file }}
+          KC: ${{ secrets.kubeconfig }}
+        run: |
+          if [ -n "$WG" ] && [ -n "$KC" ]; then
+            echo "::error::Both wg-config-file and kubeconfig are set. Only one network tunnel is allowed."
+            exit 1
+          fi
+
+      - name: Validate schema file
+        env:
+          SCHEMA_FILE: ${{ inputs.schema-file }}
+        run: |
+          if [ ! -f "$SCHEMA_FILE" ]; then
+            echo "::error::Schema file '$SCHEMA_FILE' not found in the caller repo."
+            exit 1
+          fi
+
+      - name: Set up WireGuard connection
+        if: ${{ env.WG_CONFIG_FILE != '' }}
+        uses: NFUChen/cloud-actions/.github/actions/wireguard@main
+        env:
+          WG_CONFIG_FILE: ${{ secrets.wg-config-file }}
+        with:
+          WG_CONFIG_FILE: ${{ secrets.wg-config-file }}
+
+      - name: Set up Telepresence connection
+        if: ${{ env.KUBECONFIG_CONTENT != '' }}
+        uses: NFUChen/cloud-actions/.github/actions/telepresence@main
+        env:
+          KUBECONFIG_CONTENT: ${{ secrets.kubeconfig }}
+        with:
+          kubeconfig: ${{ secrets.kubeconfig }}
+          also-proxy: ${{ inputs.also-proxy }}
+
+      - name: Check database connectivity
+        env:
+          DB_HOST: ${{ secrets.db-host }}
+          DB_PORT: ${{ secrets.db-port }}
+        run: |
+          DB_PORT="${DB_PORT:-5432}"
+          echo "Testing connectivity to ${DB_HOST}:${DB_PORT}..."
+          if ! nc -zv -w 10 "$DB_HOST" "$DB_PORT" 2>&1; then
+            echo "::error::Cannot reach database at ${DB_HOST}:${DB_PORT}. Aborting plan."
+            exit 1
+          fi
+          echo "Database connectivity check passed."
+
+      - name: Set up pgschema
+        uses: NFUChen/cloud-actions/.github/actions/setup-pgschema@main
+        with:
+          pgschema-version: ${{ inputs.pgschema-version }}
+
+      - name: Generate migration plan
+        id: plan
+        env:
+          PGHOST: ${{ secrets.db-host }}
+          PGPORT: ${{ secrets.db-port }}
+          PGDATABASE: ${{ secrets.db-name }}
+          PGUSER: ${{ secrets.db-user }}
+          PGPASSWORD: ${{ secrets.db-password }}
+          PGSSLMODE: ${{ secrets.db-sslmode }}
+          SCHEMA_FILE: ${{ inputs.schema-file }}
+          SCHEMA: ${{ inputs.schema }}
+        run: |
+          export PGPORT="${PGPORT:-5432}"
+          export PGSSLMODE="${PGSSLMODE:-prefer}"
+
+          mkdir -p plan-output
+          pgschema plan \
+            --schema "$SCHEMA" \
+            --file "$SCHEMA_FILE" \
+            --output-human plan-output/plan.txt \
+            --output-json plan-output/plan.json \
+            --output-sql plan-output/migration.sql \
+            --no-color
+
+          if [ ! -f plan-output/plan.json ]; then
+            echo "::error::pgschema plan did not produce plan.json."
+            exit 1
+          fi
+
+          # A plan with no diffs means the database already matches the schema file.
+          DIFF_COUNT=$(jq '.diffs | length' plan-output/plan.json)
+          echo "diff-count=${DIFF_COUNT}" >> "$GITHUB_OUTPUT"
+          echo "Plan contains ${DIFF_COUNT} change(s)."
+
+      - name: Write plan to job summary
+        env:
+          SCHEMA_FILE: ${{ inputs.schema-file }}
+          SCHEMA: ${{ inputs.schema }}
+          PGSCHEMA_VERSION: ${{ inputs.pgschema-version }}
+          DIFF_COUNT: ${{ steps.plan.outputs.diff-count }}
+        run: |
+          {
+            echo "## pgschema Plan"
+            echo ""
+            echo "**Schema file**: \`${SCHEMA_FILE}\`"
+            echo "**Schema**: \`${SCHEMA}\`"
+            echo "**pgschema version**: \`${PGSCHEMA_VERSION}\`"
+            echo "**Changes**: ${DIFF_COUNT}"
+            echo ""
+            echo "### Planned Changes"
+            echo ""
+            echo '```'
+            cat plan-output/plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: plan-output/
+          retention-days: ${{ inputs.artifact-retention-days }}
+
+      - name: Fail on changes
+        if: ${{ inputs.fail-on-changes && steps.plan.outputs.diff-count != '0' }}
+        env:
+          DIFF_COUNT: ${{ steps.plan.outputs.diff-count }}
+        run: |
+          echo "::error::Plan contains ${DIFF_COUNT} change(s) and fail-on-changes is enabled."
+          exit 1
