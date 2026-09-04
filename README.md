@@ -6,9 +6,6 @@ Reusable GitHub Actions workflows and composite actions for common cloud infrast
 
 | Domain | Workflow | Description |
 |--------|----------|-------------|
-| **Database** | `atlas-schema-plan.yml` | Preview Atlas schema diff on PR |
-| **Database** | `atlas-schema-apply.yml` | Apply Atlas schema changes |
-| **Database** | `atlas-schema-inspect.yml` | Inspect live DB schema, optionally commit HCL to repo |
 | **Docker** | `docker-build-push-ghcr.yml` | Build & push to GitHub Container Registry |
 | **Docker** | `docker-build-push-dockerhub.yml` | Build & push to Docker Hub |
 | **Docker** | `docker-build-push-ecr.yml` | Build & push to AWS ECR |
@@ -58,7 +55,7 @@ jobs:
 
 See the detailed docs for each domain:
 
-- [Atlas (Database Schema)](docs/ATLAS.md)
+- [pgschema (Database Schema)](docs/PGSCHEMA.md)
 - [Docker (Build & Push)](docs/DOCKER.md)
 - [K8s (Deployment)](docs/K8S.md)
 - [Config Fetch](docs/CONFIG-FETCH.md)
@@ -72,7 +69,6 @@ This repo ships with [Claude Code skills](https://docs.anthropic.com/en/docs/cla
 
 | Skill | Triggers on |
 |-------|-------------|
-| `cloud-actions-atlas` | Database schema, Atlas, migrations, schema diff/apply |
 | `cloud-actions-docker` | Docker build, container image, push to registry |
 | `cloud-actions-k8s` | K8s deploy, kubectl apply, Helm upgrade, cluster deployment |
 | `cloud-actions-config-fetch` | Config fetch, download config, S3 config, Azure Blob config, GCS config, Git config |
@@ -91,7 +87,6 @@ git submodule add https://github.com/NFUChen/cloud-actions.git .cloud-actions
 
 # Symlink the skills into your project's Claude skills directory
 mkdir -p .claude/skills
-ln -s ../../.cloud-actions/.claude/skills/cloud-actions-atlas .claude/skills/cloud-actions-atlas
 ln -s ../../.cloud-actions/.claude/skills/cloud-actions-docker .claude/skills/cloud-actions-docker
 ln -s ../../.cloud-actions/.claude/skills/cloud-actions-k8s .claude/skills/cloud-actions-k8s
 ln -s ../../.cloud-actions/.claude/skills/cloud-actions-config-fetch .claude/skills/cloud-actions-config-fetch
@@ -113,7 +108,6 @@ git clone https://github.com/NFUChen/cloud-actions.git /tmp/cloud-actions
 
 # Copy the skills you need into your project
 mkdir -p .claude/skills
-cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-atlas .claude/skills/
 cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-docker .claude/skills/
 cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-k8s .claude/skills/
 cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-config-fetch .claude/skills/
@@ -129,7 +123,6 @@ rm -rf /tmp/cloud-actions
 git clone https://github.com/NFUChen/cloud-actions.git /tmp/cloud-actions
 
 # Copy to your global Claude skills directory
-cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-atlas ~/.claude/skills/
 cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-docker ~/.claude/skills/
 cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-k8s ~/.claude/skills/
 cp -r /tmp/cloud-actions/.claude/skills/cloud-actions-config-fetch ~/.claude/skills/
@@ -146,7 +139,5 @@ Once installed, just describe what you need to your AI agent:
 > "Set up Docker build to GHCR with multi-platform support"
 
 > "I need a Helm deploy workflow for my charts/api chart to the staging namespace"
-
-> "Set up Atlas schema plan on PR and manual apply for my PostgreSQL schema"
 
 The agent will generate the complete caller workflow YAML with the correct inputs, secrets, and triggers.
